@@ -109,10 +109,13 @@ class OrthogonalPLS(PLS):
 
         return self
 
-    def transform(self, X):
+    def transform(self, X, include_orthogonal=False):
         X_orthogonal_removed, ortho_scores = self.remove_orthogonal_variation(X)
         scores = X_orthogonal_removed.dot(self.weights_)
-        return np.vstack([scores, ortho_scores])
+        if include_orthogonal:
+            return np.hstack([scores, ortho_scores])
+        else:
+            return scores
 
     def remove_orthogonal_variation(self, X):
         ortho_scores = X.dot(self.orthogonal_weights_)
