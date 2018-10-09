@@ -3,7 +3,7 @@ import numpy as np
 from scipy.sparse.linalg import svds
 
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.decomposition import PCA
+from sklearn.decomposition import TruncatedSVD
 
 
 class MCR(BaseEstimator, TransformerMixin):
@@ -24,12 +24,172 @@ class MCR(BaseEstimator, TransformerMixin):
         """ Transform X. """
 
 
-class NipalsPCA(PCA):
+class PCA(BaseEstimator, TransformerMixin):
 
-    """ PCA using NIPALS algorithm. """
+    """ Principal Components Analysis (PCA). 
+    
+    PCA is an unsupervised method for reducing the dimension
+    of a data-matrix into a full-rank set of principal components to 
+    provide an approximation of the input data matrix.
+    
+    Parameters
+    ----------
+    n_components : int
+        Number of principal components to fit.
+    algorithm : {'randomized', 'qr', 'nipals', 'svd'}, default 'svd'
+        Algorithm to use for fitting PCA.
+        
+    Attributes
+    ----------
+    loadings_ : array
+        Variable loading matrix, shape [p x n_components].
+    R2_ : array
+        Component-wise summary of fit.
+        
+    References
+    ----------
+    Wold, Svante, Kim Esbensen, and Paul Geladi. “Principal Component 
+    Analysis.” Chemometrics and Intelligent Laboratory Systems, 
+    Proceedings of the Multivariate Statistical Workshop for Geologists 
+    and Geochemists, 2, no. 1 (August 1, 1987): 37–52. 
+    https://doi.org/10.1016/0169-7439(87)80084-9.
+    
+    Halko, Nathan, Per-Gunnar Martinsson, and Joel A. Tropp. “Finding 
+    Structure with Randomness: Probabilistic Algorithms for Constructing
+    Approximate Matrix Decompositions.” arXiv:0909.4061 [Math], 
+    September 22, 2009. http://arxiv.org/abs/0909.4061.
 
-    def _fit(self, X):
-        """ Fit PCA using NIPALS algorithm. """
+    Sharma, Alok, Kuldip K. Paliwal, Seiya Imoto, and Satoru Miyano. 
+    “Principal Component Analysis Using QR Decomposition.” International 
+    Journal of Machine Learning and Cybernetics 4, no. 6 
+    (December 1, 2013): 679–83. https://doi.org/10.1007/s13042-012-0131-7.
+    """
+
+    def __init__(self, n_components, algorithm='svd'):
+        self.n_components = n_components
+        self.algorithm = algorithm
+
+    def fit(self, X, skip_r2=False, **kwargs):
+        """ Fit PCA using selected algoritm.
+        
+        Parameters
+        ----------
+        X : array
+            Input data matrix, shape [n x p].
+        skip_r2 : bool
+            If True, skip calculation of R2.
+        """
+        if self.algorithm == 'randomized':
+            loadings, R2 = self._fit_randomized_pca(X, **kwargs)
+        elif self.algorithm == 'qr':
+            loadings = self._fit_qr_pca(X, **kwargs)
+            R2 = None
+        elif self.algorithm == 'nipals':
+            loadings = self._fit_nipals_pca(X, **kwargs)
+            R2 = None
+        elif self.algorithm == 'svd':
+            loadings, R2 = self._fit_svd_pca(X, **kwargs)
+        else:
+            raise ValueError('Invalid algorithm: {}'.format(self.algorithm))
+
+        self.loadings_ = loadings
+
+        if not skip_r2:
+            if R2 is not None:
+                self.R2_ = R2
+            else:
+                self.R2_ = self._calculate_summary_of_fit(X)
+
+        return self
+
+    def transform(self, X):
+        """ Transform input data into scores using fitted loadings.
+        
+        Parameters
+        ----------
+        X : array
+            Input data matrix, shape [n x p]
+
+        Returns
+        -------
+        scores : array
+            Scores corresponding to `X`, shape [n x n_components]
+        """
+        return X.dot(self.loadings_)
+
+    def inverse_transform(self, scores, component=None):
+        """ Transform scores back into approximated data-space.
+        
+        Parameters
+        ----------
+        scores : array
+            Obsevervation scores, shape [n x n_components].
+        component : int, optional
+            If component-index (1-indexed) is provided, restrict 
+            inverse transform to only the current component.
+
+        Returns
+        -------
+        X_approximated : array
+            Approximated reconstruction of data, shape [n x p].
+        """
+        if component is not None:
+            c_i = component - 1
+            scores = scores[:, c_i][..., np.newaxis]
+            loadings = self.loadings_[:, c_i][..., np.newaxis]
+        else:
+            loadings = self.loadings_
+
+        return scores.dot(loadings.T)
+
+    def _calculate_summary_of_fit(self, X):
+        X_ss = (X ** 2).sum()
+        scores = self.transform(X)
+        R2 = list()
+
+        for component in range(1, self.n_components + 1):
+            X_approximated = self.inverse_transform(scores, component)
+            residual_ss = ((X - X_approximated) ** 2).sum()
+            R2.append(1 - residual_ss / X_ss)
+
+        return np.array(R2)
+
+    def _fit_svd_pca(self, X, **kwargs):
+        U, S, V = svds(X, self.n_components)
+        return np.fliplr(V.T), np.flip((S ** 2) / (X ** 2).sum(), 0)
+
+    def _fit_qr_pca(self, X, **kwargs):
+        Q, R = np.linalg.qr(X.T)
+        U, S, V = svds(R.T, self.n_components)
+        V = V.T
+        loadings = Q.dot(np.fliplr(V))
+        return loadings
+
+    def _fit_nipals_pca(self, X, max_iter=1000, tol=1e-10):
+        loadings = list()
+        for k in range(self.n_components):
+            loading = X[0, :][..., np.newaxis]
+            loading /= np.linalg.norm(loading)
+            for i in range(max_iter):
+                previous_loading = loading
+
+                scores = X.dot(loading)
+                loading = X.T.dot(scores)
+                loading /= np.linalg.norm(loading)
+
+                if np.linalg.norm(loading - previous_loading) < tol:
+                    loadings.append(loading)
+                    break
+
+            if k < self.n_components - 1:
+                X = X - scores.dot(loading.T)
+
+        return np.column_stack(loadings)
+
+    def _fit_randomized_pca(self, X, **kwargs):
+        pca = TruncatedSVD(self.n_components, **kwargs).fit(X)
+        return pca.components_.T, pca.explained_variance_ratio_
+
 
 
 class BidrectionalOrthogonalPLS(BaseEstimator, TransformerMixin):
@@ -252,7 +412,7 @@ class BidrectionalOrthogonalPLS(BaseEstimator, TransformerMixin):
         # Remove Y-orthogonal variation.
         for i in range(n_unique):
 
-            w_o = np.squeeze(PCA(n_components=1).fit_transform(E.T.dot(T)))
+            w_o = np.squeeze(PCA(1, 'nipals').fit_transform(E.T.dot(T)))
             w_o = w_o / np.linalg.norm(w_o)
 
             t_o = X.dot(w_o)
